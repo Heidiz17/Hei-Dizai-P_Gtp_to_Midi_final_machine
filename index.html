@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arcatdia GP & MIDI 雙核心工作站</title>
-  <!-- 1. AlphaTab: 用於解析 GP 檔案及原軌試聽 -->
+  <!-- 1. AlphaTab: 解析 GP 檔案及原軌試聽 -->
   <script src="https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/alphaTab.js"></script>
-  <!-- 2. MidiPlayerJS & Tone.js: 用於生成的純 MIDI 檔案本地實時試聽 -->
+  <!-- 2. MidiPlayerJS & Tone.js: 生成純 MIDI 檔案本地實時試聽 -->
   <script src="https://cdn.jsdelivr.net/npm/midi-player-js@2.0.16/browser/midiplayer.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
   <style>
@@ -60,7 +60,6 @@
     .btn-action { background: #333346; color: #00d2ff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
     .btn-midi-play { background: #4ade80; color: #000; font-size: 13px; padding: 8px 16px; font-weight: bold; }
     
-    /* 🎯 狀態指示欄與 Error 黑匣子 */
     #statusBox {
       background: #050508;
       border: 1px solid #00d2ff;
@@ -76,6 +75,40 @@
     .log-success { color: #4ade80; font-weight: bold; }
     .log-error { color: #ff3366; font-weight: bold; background: rgba(255, 51, 102, 0.1); padding: 4px; border-radius: 4px; }
     
+    /* 🎯 播放進度控制面板 */
+    .seek-container {
+      background: #14141c;
+      border: 1px solid #33334a;
+      border-radius: 8px;
+      padding: 12px;
+      margin: 12px 0;
+    }
+    .seek-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      font-family: monospace;
+      color: #00d2ff;
+      margin-bottom: 6px;
+    }
+    .seek-slider {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: #2b2b3d;
+      outline: none;
+    }
+    .seek-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #00d2ff;
+      cursor: pointer;
+      box-shadow: 0 0 8px rgba(0,210,255,0.6);
+    }
+
     .midi-box {
       background: #121218;
       border: 1.5px solid #4ade80;
@@ -88,9 +121,8 @@
 <body>
 
   <h2>🎸 GP 拆軌 & MIDI 雙試聽工作站</h2>
-  <p class="desc">發達煙定・純前端零依賴・手機直跑</p>
+  <p class="desc">發達煙定・純前端零依賴・自選小節/時間播放</p>
 
-  <!-- 🎯 即時系統狀態與 Error 視窗 -->
   <div id="statusBox">
     <div id="statusText" class="log-info">⚙️ 系統準備就緒，等待樂譜...</div>
   </div>
@@ -106,7 +138,16 @@
         <div id="songTitle" style="font-weight:bold; font-size:16px; color:#fff;"></div>
         <div id="songTempo" style="font-size:12px; color:#888;"></div>
       </div>
-      <button class="btn-action" id="gpPlayBtn" style="font-size:13px; padding:8px 12px;">▶ GTP 全曲試聽</button>
+      <button class="btn-action" id="gpPlayBtn" style="font-size:13px; padding:8px 12px;">▶ GTP 播放</button>
+    </div>
+
+    <!-- 🎯 小節 (Bar) 與時間 (Time) 控制拉桿 -->
+    <div class="seek-container">
+      <div class="seek-meta">
+        <span id="barDisplay">小節: 1 / 1</span>
+        <span id="timeDisplay">00:00 / 00:00</span>
+      </div>
+      <input type="range" id="seekSlider" class="seek-slider" min="0" max="100" value="0">
     </div>
 
     <label style="font-weight:bold; font-size:13px; display:block; margin-bottom:6px; color:#00d2ff;">2. 選擇你要合成的多音軌：</label>
@@ -114,7 +155,6 @@
 
     <button class="btn btn-main" id="generateMidiBtn">⚡ 提煉所選音軌生成 MIDI</button>
 
-    <!-- MIDI 試聽與下載專屬區域 -->
     <div id="midiArea" class="midi-box" style="display:none;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <span style="font-size:13px; font-weight:bold; color:#4ade80;">🎹 生成的 MIDI 已就緒：</span>
@@ -124,7 +164,6 @@
     </div>
   </div>
 
-  <!-- 隱藏的 AlphaTab 引擎掛載點 -->
   <div id="alphaTabEngine" style="display:none;"></div>
 
   <script>
@@ -132,6 +171,9 @@
     let rawScoreBytes = null;
     let currentScore = null;
     let isGpPlaying = false;
+    let totalMasterBars = 1;
+    let totalDurationMs = 0;
+    let isUserSeeking = false;
 
     let midiPlayer = null;
     let synth = null;
@@ -139,15 +181,23 @@
     let isMidiPlaying = false;
 
     const statusText = document.getElementById('statusText');
+    const barDisplay = document.getElementById('barDisplay');
+    const timeDisplay = document.getElementById('timeDisplay');
+    const seekSlider = document.getElementById('seekSlider');
 
     function logStatus(msg, type = 'info') {
-      console.log(`[Status] ${msg}`);
       if (!statusText) return;
       statusText.className = type === 'error' ? 'log-error' : (type === 'success' ? 'log-success' : 'log-info');
       statusText.innerText = msg;
     }
 
-    // 初始化 AlphaTab
+    function formatTime(ms) {
+      const totalSec = Math.floor(ms / 1000);
+      const m = Math.floor(totalSec / 60).toString().padStart(2, '0');
+      const s = (totalSec % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
     window.addEventListener('DOMContentLoaded', () => {
       try {
         const container = document.getElementById('alphaTabEngine');
@@ -164,10 +214,27 @@
 
         api.playerStateChanged.on((args) => {
           isGpPlaying = (args.state === 1);
-          document.getElementById('gpPlayBtn').innerText = isGpPlaying ? '⏹ 停止 GTP' : '▶ GTP 全曲試聽';
+          document.getElementById('gpPlayBtn').innerText = isGpPlaying ? '⏹ 停止 GTP' : '▶ GTP 播放';
         });
 
-        // 初始化 Tone.js 合成器
+        // 🎯 核心進度監聽：隨播放自動更新時間與小節
+        api.playerPositionChanged.on((args) => {
+          if (isUserSeeking) return; // 使用者拖曳時不打擾
+
+          totalDurationMs = args.endTime;
+          const currentMs = args.currentTime;
+          timeDisplay.innerText = `${formatTime(currentMs)} / ${formatTime(totalDurationMs)}`;
+
+          // 計算小節
+          if (totalDurationMs > 0 && totalMasterBars > 0) {
+            const ratio = Math.min(1, currentMs / totalDurationMs);
+            const currentBar = Math.max(1, Math.min(totalMasterBars, Math.floor(ratio * totalMasterBars) + 1));
+            barDisplay.innerText = `小節: Bar ${currentBar} / ${totalMasterBars}`;
+            seekSlider.value = Math.floor(ratio * 1000);
+          }
+        });
+
+        // 初始化 Tone.js
         synth = new Tone.PolySynth(Tone.Synth, {
           oscillator: { type: "triangle" },
           envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 }
@@ -185,10 +252,9 @@
         midiPlayer.on('endOfFile', () => {
           isMidiPlaying = false;
           document.getElementById('midiPlayBtn').innerText = '▶ 試聽生成 MIDI';
-          logStatus('🏁 MIDI 試聽播放完畢', 'info');
         });
       } catch(err) {
-        logStatus(`❌ 引擎初始化失敗: ${err.message}`, 'error');
+        logStatus(`❌ 初始化失敗: ${err.message}`, 'error');
       }
     });
 
@@ -198,7 +264,6 @@
     const midiArea = document.getElementById('midiArea');
     const midiPlayBtn = document.getElementById('midiPlayBtn');
 
-    // 載入 GP 樂譜
     filePicker.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -210,6 +275,12 @@
 
         currentScore = alphaTab.importer.ScoreLoader.loadScoreFromBytes(rawScoreBytes);
         api.renderScore(currentScore);
+
+        totalMasterBars = currentScore.masterBars ? currentScore.masterBars.length : (currentScore.tracks[0]?.measures?.length || 1);
+        seekSlider.max = 1000;
+        seekSlider.value = 0;
+        barDisplay.innerText = `小節: Bar 1 / ${totalMasterBars}`;
+        timeDisplay.innerText = `00:00 / 00:00`;
 
         document.getElementById('songTitle').innerText = currentScore.title || file.name;
         document.getElementById('songTempo').innerText = `原曲速度: ${currentScore.tempo} BPM`;
@@ -232,20 +303,45 @@
 
         gpCard.style.display = 'block';
         midiArea.style.display = 'none';
-        logStatus(`✅ 成功解析樂譜！共拆出 ${currentScore.tracks.length} 條音軌。`, 'success');
+        logStatus(`✅ 樂譜解析成功！共 ${totalMasterBars} 個小節，隨時可拖動播放。`, 'success');
       } catch (err) {
         logStatus(`❌ 解析 GP 樂譜失敗: ${err.message}`, 'error');
       }
     });
 
-    // 1. GTP 全曲播放
+    // 🎯 拖動進度條：動態即時跳轉
+    seekSlider.addEventListener('input', (e) => {
+      isUserSeeking = true;
+      const ratio = e.target.value / 1000;
+      const targetBar = Math.max(1, Math.min(totalMasterBars, Math.floor(ratio * totalMasterBars) + 1));
+      barDisplay.innerText = `小節: Bar ${targetBar} / ${totalMasterBars} (放手播放)`;
+      if (totalDurationMs > 0) {
+        timeDisplay.innerText = `${formatTime(ratio * totalDurationMs)} / ${formatTime(totalDurationMs)}`;
+      }
+    });
+
+    seekSlider.addEventListener('change', (e) => {
+      isUserSeeking = false;
+      const ratio = e.target.value / 1000;
+      const targetMs = ratio * totalDurationMs;
+      
+      // 指揮 AlphaTab 跳轉至指定時間播放
+      if (api) {
+        api.tickPosition = Math.floor(ratio * (api.player?.totalTicks || 10000));
+        if (!isGpPlaying) {
+          api.play();
+        }
+      }
+      logStatus(`🎯 已跳轉至進度: ${Math.floor(ratio * 100)}% (Bar ${Math.floor(ratio * totalMasterBars) + 1})`, 'info');
+    });
+
+    // GTP 播放 / 暫停
     document.getElementById('gpPlayBtn').addEventListener('click', () => {
       if (!api) return;
       if (isMidiPlaying) stopMidi();
       api.playPause();
     });
 
-    // 獨奏特定 GTP 軌道
     window.soloPlayTrack = function(index) {
       if (!api || !currentScore) return;
       if (isMidiPlaying) stopMidi();
@@ -256,32 +352,21 @@
       logStatus(`🎵 正在獨奏軌道: ${currentScore.tracks[index].name || (index + 1)}`, 'info');
     };
 
-    // 2. 提煉音軌生成 MIDI（官方 API 雙保險路徑修復）
+    // 提煉音軌生成 MIDI
     document.getElementById('generateMidiBtn').addEventListener('click', () => {
-      logStatus('⚡ 正在提取音軌數據生成 MIDI...', 'info');
-
-      if (!rawScoreBytes) {
-        logStatus('❌ 未能找到樂譜數據，請重新載入檔案！', 'error');
-        return;
-      }
+      logStatus('⚡ 正在提煉音軌數據...', 'info');
+      if (!rawScoreBytes) return;
 
       try {
         const exportScoreObj = alphaTab.importer.ScoreLoader.loadScoreFromBytes(rawScoreBytes);
-        
-        const checkboxes = document.querySelectorAll('.track-cb');
-        const selectedIndices = [];
-        checkboxes.forEach((cb) => {
-          if (cb.checked) {
-            selectedIndices.push(parseInt(cb.getAttribute('data-index'), 10));
-          }
-        });
+        const selectedIndices = Array.from(document.querySelectorAll('.track-cb:checked'))
+          .map(cb => parseInt(cb.getAttribute('data-index'), 10));
 
         if (selectedIndices.length === 0) {
-          logStatus('⚠️ 請至少勾選一條要合成的音軌！', 'error');
+          logStatus('⚠️ 請至少勾選一條音軌！', 'error');
           return;
         }
 
-        // 僅保留被勾選的音軌
         exportScoreObj.tracks = exportScoreObj.tracks.filter((t, idx) => selectedIndices.includes(idx));
 
         let midiFile = null;
@@ -294,34 +379,21 @@
           midiFile = alphaTab.midi.MidiFile.fromScore(exportScoreObj);
         }
 
-        if (midiFile && typeof midiFile.toBinary === 'function') {
-          currentMidiBytes = midiFile.toBinary();
-        } else if (midiFile instanceof Uint8Array) {
-          currentMidiBytes = midiFile;
-        } else {
-          currentMidiBytes = new Uint8Array(midiFile);
-        }
+        currentMidiBytes = (typeof midiFile.toBinary === 'function') ? midiFile.toBinary() : new Uint8Array(midiFile);
 
         midiArea.style.display = 'block';
-        logStatus(`🎉 成功提煉 ${selectedIndices.length} 條音軌！大小: ${currentMidiBytes.byteLength} bytes，請試聽或下載。`, 'success');
+        logStatus(`🎉 成功提煉 ${selectedIndices.length} 條音軌，請試聽或下載！`, 'success');
       } catch (err) {
-        console.error(err);
         logStatus(`❌ 生成 MIDI 發生錯誤: ${err.message}`, 'error');
       }
     });
 
-    // 3. MIDI 試聽播放
+    // MIDI 試聽
     midiPlayBtn.addEventListener('click', async () => {
-      if (!currentMidiBytes) {
-        logStatus('❌ 尚未生成任何 MIDI 數據！', 'error');
-        return;
-      }
-
+      if (!currentMidiBytes) return;
       if (isGpPlaying) api.pause();
 
-      logStatus('🔊 啟動 Web Audio 音訊環境...', 'info');
       await Tone.start();
-
       if (isMidiPlaying) {
         stopMidi();
       } else {
@@ -333,7 +405,7 @@
           midiPlayBtn.innerText = '⏹ 停止 MIDI';
           logStatus('▶ 正在試聽生成的 MIDI 檔案...', 'success');
         } catch(err) {
-          logStatus(`❌ MIDI 試聽失敗: ${err.message} (建議直接下載檔案)`, 'error');
+          logStatus(`❌ MIDI 試聽失敗: ${err.message}`, 'error');
         }
       }
     });
@@ -342,29 +414,21 @@
       if (midiPlayer) midiPlayer.stop();
       isMidiPlaying = false;
       midiPlayBtn.innerText = '▶ 試聽生成 MIDI';
-      logStatus('⏹ 已停止試聽', 'info');
     }
 
-    // 4. 下載生成的 MIDI 檔案
+    // 下載 MIDI
     document.getElementById('downloadMidiBtn').addEventListener('click', () => {
-      if (!currentMidiBytes) {
-        logStatus('❌ 尚未生成任何 MIDI 數據！', 'error');
-        return;
-      }
-      try {
-        const blob = new Blob([currentMidiBytes], { type: 'audio/midi' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${currentScore.title || 'extracted'}_custom.mid`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        logStatus('📥 MIDI 檔案已成功觸發下載！', 'success');
-      } catch(err) {
-        logStatus(`❌ 下載失敗: ${err.message}`, 'error');
-      }
+      if (!currentMidiBytes) return;
+      const blob = new Blob([currentMidiBytes], { type: 'audio/midi' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${currentScore.title || 'extracted'}_custom.mid`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      logStatus('📥 MIDI 檔案下載完成！', 'success');
     });
   </script>
 </body>
