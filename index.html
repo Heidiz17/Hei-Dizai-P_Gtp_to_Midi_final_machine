@@ -256,7 +256,7 @@
       logStatus(`🎵 正在獨奏軌道: ${currentScore.tracks[index].name || (index + 1)}`, 'info');
     };
 
-    // 2. 提煉音軌生成 MIDI（強化反饋與防錯）
+    // 2. 提煉音軌生成 MIDI（官方 API 雙保險路徑修復）
     document.getElementById('generateMidiBtn').addEventListener('click', () => {
       logStatus('⚡ 正在提取音軌數據生成 MIDI...', 'info');
 
@@ -281,13 +281,25 @@
           return;
         }
 
+        // 僅保留被勾選的音軌
         exportScoreObj.tracks = exportScoreObj.tracks.filter((t, idx) => selectedIndices.includes(idx));
 
-        // 匯出二進制 MIDI
-        currentMidiBytes = alphaTab.exporter.MidiExport.exportScore(exportScoreObj, null);
-        
-        if (!(currentMidiBytes instanceof Uint8Array)) {
-          currentMidiBytes = new Uint8Array(currentMidiBytes);
+        let midiFile = null;
+        if (alphaTab.midi && alphaTab.midi.MidiFile && typeof alphaTab.midi.MidiFile.fromScore === 'function') {
+          midiFile = alphaTab.midi.MidiFile.fromScore(exportScoreObj);
+        } else if (alphaTab.exporter && alphaTab.exporter.MidiExport) {
+          midiFile = alphaTab.exporter.MidiExport.exportScore(exportScoreObj);
+        } else {
+          exportScoreObj.finish();
+          midiFile = alphaTab.midi.MidiFile.fromScore(exportScoreObj);
+        }
+
+        if (midiFile && typeof midiFile.toBinary === 'function') {
+          currentMidiBytes = midiFile.toBinary();
+        } else if (midiFile instanceof Uint8Array) {
+          currentMidiBytes = midiFile;
+        } else {
+          currentMidiBytes = new Uint8Array(midiFile);
         }
 
         midiArea.style.display = 'block';
