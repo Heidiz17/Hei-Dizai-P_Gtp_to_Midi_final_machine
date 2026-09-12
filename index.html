@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arcatdia GP & MIDI 雙核心工作站</title>
+  <!-- 引入穩定版 AlphaTab -->
   <script src="https://cdn.jsdelivr.net/npm/@coderline/alphatab@1.3.0/dist/alphaTab.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/midi-player-js@2.0.16/browser/midiplayer.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -104,6 +105,29 @@
       background: #00d2ff;
       cursor: pointer;
     }
+
+    /* 🎯 小節微調按鈕組排版 */
+    .bar-btn-group {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .btn-step {
+      background: #252536;
+      color: #00d2ff;
+      border: 1px solid #3b3b52;
+      border-radius: 6px;
+      padding: 8px 0;
+      font-size: 12px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .btn-step:active {
+      background: #00d2ff;
+      color: #000;
+    }
+
     .midi-box {
       background: #121218;
       border: 1.5px solid #4ade80;
@@ -116,10 +140,10 @@
 <body>
 
   <h2>🎸 GP 拆軌 & MIDI 雙試聽工作站</h2>
-  <p class="desc" id="versionTag">⚡ v3.0 終極修復版（見到即生效）</p>
+  <p class="desc">⚡ v3.5 自動扒 API & 小節步進版</p>
 
   <div id="statusBox">
-    <div id="statusText" class="log-info">⚙️ 系統已加載 v3.0，等待樂譜...</div>
+    <div id="statusText" class="log-info">⚙️ 系統就緒，等待樂譜...</div>
   </div>
 
   <div class="card" style="margin-top: 12px;">
@@ -143,6 +167,14 @@
         <span id="timeDisplay">00:00 / 00:00</span>
       </div>
       <input type="range" id="seekSlider" class="seek-slider" min="1" max="100" value="1">
+      
+      <!-- 🎯 4 個精確微調掣：-4, -1, +1, +4 -->
+      <div class="bar-btn-group">
+        <button class="btn-step" onclick="stepBar(-4)">⏪ -4 Bar</button>
+        <button class="btn-step" onclick="stepBar(-1)">◀ -1 Bar</button>
+        <button class="btn-step" onclick="stepBar(1)">+1 Bar ▶</button>
+        <button class="btn-step" onclick="stepBar(4)">+4 Bar ⏩</button>
+      </div>
     </div>
 
     <label style="font-weight:bold; font-size:13px; display:block; margin-bottom:6px; color:#00d2ff;">2. 選擇你要合成的多音軌：</label>
@@ -166,6 +198,7 @@
     let currentScore = null;
     let isGpPlaying = false;
     let totalBars = 1;
+    let currentBarIndex = 1;
     let isUserDragging = false;
 
     let midiPlayer = null;
@@ -201,7 +234,7 @@
       });
 
       api.soundFontLoaded.on(() => {
-        logStatus('✅ 音訊引擎已就緒，請載入樂譜！', 'success');
+        logStatus('✅ 引擎已就緒，請載入樂譜！', 'success');
       });
 
       api.playerStateChanged.on((args) => {
@@ -211,11 +244,14 @@
 
       api.playerPositionChanged.on((args) => {
         if (isUserDragging) return;
+
         timeDisplay.innerText = `${formatTime(args.currentTime)} / ${formatTime(args.endTime)}`;
-        const masterBarIndex = args.currentMasterBar ? args.currentMasterBar.index : 0;
-        const currentBar = masterBarIndex + 1;
-        barDisplay.innerText = `小節: Bar ${currentBar} / ${totalBars}`;
-        seekSlider.value = currentBar;
+        
+        if (args.currentMasterBar) {
+          currentBarIndex = args.currentMasterBar.index + 1;
+          barDisplay.innerText = `小節: Bar ${currentBarIndex} / ${totalBars}`;
+          seekSlider.value = currentBarIndex;
+        }
       });
 
       synth = new Tone.PolySynth(Tone.Synth).toDestination();
@@ -252,6 +288,7 @@
         api.renderScore(currentScore);
 
         totalBars = currentScore.masterBars.length;
+        currentBarIndex = 1;
         seekSlider.min = 1;
         seekSlider.max = totalBars;
         seekSlider.value = 1;
@@ -285,24 +322,37 @@
       }
     });
 
+    // 🎯 核心小節精確跳轉邏輯（防過界防到零）
+    function jumpToBar(target) {
+      if (!api || !currentScore) return;
+      
+      // 鎖死在 [1, totalBars] 範圍內，絕不為 0 或超標
+      currentBarIndex = Math.max(1, Math.min(totalBars, target));
+      seekSlider.value = currentBarIndex;
+      barDisplay.innerText = `小節: Bar ${currentBarIndex} / ${totalBars}`;
+
+      const masterBar = currentScore.masterBars[currentBarIndex - 1];
+      if (masterBar) {
+        api.tickPosition = masterBar.start;
+        logStatus(`🎯 已定位至第 ${currentBarIndex} 小節`, 'info');
+        if (!isGpPlaying) api.play();
+      }
+    }
+
+    // 🎯 微調步進按鈕（-4, -1, +1, +4）
+    window.stepBar = function(offset) {
+      jumpToBar(currentBarIndex + offset);
+    };
+
     seekSlider.addEventListener('input', (e) => {
       isUserDragging = true;
-      const targetBar = parseInt(e.target.value, 10);
-      barDisplay.innerText = `小節: Bar ${targetBar} / ${totalBars} (放手定位)`;
+      const target = parseInt(e.target.value, 10);
+      barDisplay.innerText = `小節: Bar ${target} / ${totalBars} (放手定位)`;
     });
 
     seekSlider.addEventListener('change', (e) => {
-      const targetBar = parseInt(e.target.value, 10);
       isUserDragging = false;
-      if (api && currentScore) {
-        const masterBar = currentScore.masterBars[targetBar - 1];
-        if (masterBar) {
-          api.tickPosition = masterBar.start;
-          barDisplay.innerText = `小節: Bar ${targetBar} / ${totalBars}`;
-          logStatus(`🎯 已定位至第 ${targetBar} 小節`, 'info');
-          if (!isGpPlaying) api.play();
-        }
-      }
+      jumpToBar(parseInt(e.target.value, 10));
     });
 
     document.getElementById('gpPlayBtn').addEventListener('click', () => {
@@ -321,9 +371,9 @@
       logStatus(`🎵 正在獨奏: ${currentScore.tracks[index].name || (index + 1)}`, 'info');
     };
 
-    // 🎯 萬能自適應 MIDI 導出：自動探測所有 API 入口，絕不再報 is not a function
+    // 🎯 深度自動扒 API 導出核心
     document.getElementById('generateMidiBtn').addEventListener('click', () => {
-      logStatus('⚡ 正在提取音軌數據...', 'info');
+      logStatus('⚡ 正在扒取內部模組提煉 MIDI...', 'info');
       if (!currentScore) return;
 
       try {
@@ -335,40 +385,50 @@
           return;
         }
 
-        // 設定 Mute 狀態給導出器識別
+        // 設定靜音遮罩
         currentScore.tracks.forEach((t, idx) => {
           t.playbackInfo.isMute = !selectedIndices.includes(idx);
         });
 
         let binaryResult = null;
 
-        // 策略 1: 檢查 AlphaTab 新版 exporter
-        if (alphaTab.exporter && alphaTab.exporter.MidiExport) {
-          const exporter = new alphaTab.exporter.MidiExport();
-          binaryResult = exporter.export(currentScore, api.settings);
+        // 扒法 1: alphaTab 頂層 MidiExport
+        if (alphaTab.MidiExport) {
+          binaryResult = new alphaTab.MidiExport().export(currentScore, api.settings);
         }
-        // 策略 2: 檢查舊版 MidiFile
+        // 扒法 2: alphaTab.exporter.MidiExport
+        else if (alphaTab.exporter && alphaTab.exporter.MidiExport) {
+          binaryResult = new alphaTab.exporter.MidiExport().export(currentScore, api.settings);
+        }
+        // 扒法 3: alphaTab.midi.MidiFile
         else if (alphaTab.midi && alphaTab.midi.MidiFile) {
           const mf = new alphaTab.midi.MidiFile();
-          if (typeof mf.write === 'function') {
-            binaryResult = mf.write(currentScore);
-          }
+          binaryResult = mf.write ? mf.write(currentScore) : mf.toBinary(currentScore);
+        }
+        // 扒法 4: 透過 API 實例自帶方法
+        else if (typeof api.exportMidi === 'function') {
+          binaryResult = api.exportMidi();
         }
 
-        // 轉換為標準 Uint8Array
-        if (binaryResult && typeof binaryResult.toBinary === 'function') {
+        if (!binaryResult) {
+          throw new Error('自動探測失敗：未能鎖定 MIDI 導出器');
+        }
+
+        // 格式統一轉成 Uint8Array
+        if (typeof binaryResult.toBinary === 'function') {
           currentMidiBytes = binaryResult.toBinary();
         } else if (binaryResult instanceof Uint8Array) {
           currentMidiBytes = binaryResult;
-        } else if (binaryResult && binaryResult.buffer) {
+        } else if (binaryResult.buffer) {
           currentMidiBytes = new Uint8Array(binaryResult.buffer);
         } else {
-          throw new Error('當前環境未能識別 MIDI 導出模組，請刷新重試');
+          currentMidiBytes = new Uint8Array(binaryResult);
         }
 
         midiArea.style.display = 'block';
         logStatus(`🎉 成功提煉 ${selectedIndices.length} 條音軌！大小: ${currentMidiBytes.byteLength} bytes`, 'success');
       } catch (err) {
+        console.error(err);
         logStatus(`❌ 生成 MIDI 發生錯誤: ${err.message}`, 'error');
       }
     });
