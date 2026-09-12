@@ -138,7 +138,7 @@
 <body>
 
   <h2>🎸 GP 拆軌 & MIDI 雙試聽工作站</h2>
-  <p class="desc">⚡ v4.0 原生純淨版</p>
+  <p class="desc">⚡ v4.1 防禦安全純淨版</p>
 
   <div id="statusBox">
     <div id="statusText" class="log-info">⚙️ 系統就緒，等待樂譜...</div>
@@ -281,7 +281,7 @@
         currentScore = alphaTab.importer.ScoreLoader.loadScoreFromBytes(rawBytes);
         api.renderScore(currentScore);
 
-        totalBars = currentScore.masterBars.length;
+        totalBars = currentScore.masterBars ? currentScore.masterBars.length : 1;
         currentBarIndex = 1;
         seekSlider.min = 1;
         seekSlider.max = totalBars;
@@ -290,23 +290,25 @@
         timeDisplay.innerText = `00:00 / 00:00`;
 
         document.getElementById('songTitle').innerText = currentScore.title || file.name;
-        document.getElementById('songTempo').innerText = `原曲速度: ${currentScore.tempo} BPM`;
+        document.getElementById('songTempo').innerText = `原曲速度: ${currentScore.tempo || 120} BPM`;
 
         trackList.innerHTML = '';
-        currentScore.tracks.forEach((track, index) => {
-          const row = document.createElement('div');
-          row.className = 'track-row';
-          row.innerHTML = `
-            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-              <input type="checkbox" class="track-cb" data-index="${index}" checked>
-              <span style="font-size:14px;">${track.name || `軌道 ${index + 1}`}</span>
-            </label>
-            <div>
-              <button class="btn-action" onclick="soloPlayTrack(${index})">獨奏 GTP</button>
-            </div>
-          `;
-          trackList.appendChild(row);
-        });
+        if (currentScore.tracks) {
+          currentScore.tracks.forEach((track, index) => {
+            const row = document.createElement('div');
+            row.className = 'track-row';
+            row.innerHTML = `
+              <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                <input type="checkbox" class="track-cb" data-index="${index}" checked>
+                <span style="font-size:14px;">${track.name || `軌道 ${index + 1}`}</span>
+              </label>
+              <div>
+                <button class="btn-action" onclick="soloPlayTrack(${index})">獨奏 GTP</button>
+              </div>
+            `;
+            trackList.appendChild(row);
+          });
+        }
 
         gpCard.style.display = 'block';
         midiArea.style.display = 'none';
@@ -317,7 +319,7 @@
     });
 
     function jumpToBar(target) {
-      if (!api || !currentScore) return;
+      if (!api || !currentScore || !currentScore.masterBars) return;
       currentBarIndex = Math.max(1, Math.min(totalBars, target));
       seekSlider.value = currentBarIndex;
       barDisplay.innerText = `小節: Bar ${currentBarIndex} / ${totalBars}`;
@@ -352,7 +354,7 @@
     });
 
     window.soloPlayTrack = function(index) {
-      if (!api || !currentScore) return;
+      if (!api || !currentScore || !currentScore.tracks) return;
       if (isMidiPlaying) stopMidi();
       currentScore.tracks.forEach((t, i) => {
         api.changeTrackMute([t], i !== index);
@@ -361,7 +363,7 @@
       logStatus(`🎵 正在獨奏: ${currentScore.tracks[index].name || (index + 1)}`, 'info');
     };
 
-    // 🎯 原生純 JavaScript 二進制 MIDI 編碼器（零外部依賴）
+    // 🎯 具有極強防禦性的原生二進制 MIDI 編碼器
     function buildNativeMidi(tracksData, tempo) {
       function numToBytes(num, bytes) {
         const res = [];
@@ -430,9 +432,9 @@
       return new Uint8Array(allBytes);
     }
 
-    // 點擊提煉生成
+    // 點擊提煉生成（加入防禦性檢查）
     document.getElementById('generateMidiBtn').addEventListener('click', () => {
-      logStatus('⚡ 正在由原生二進制引擎直接構建 MIDI...', 'info');
+      logStatus('⚡ 正在安全掃描樂譜軌道並提煉 MIDI...', 'info');
       if (!currentScore) return;
 
       try {
@@ -452,37 +454,47 @@
           const events = [];
           let currentTick = 0;
 
-          trackData.staffs.forEach(staff => {
-            staff.bars.forEach(bar => {
-              bar.voices.forEach(voice => {
-                let barTick = 0;
-                voice.beats.forEach(beat => {
-                  let durationRatio = 1 / (beat.duration || 4);
-                  let beatTicks = Math.round(durationRatio * (ticksPerQuarter * 4));
-                  if (beat.dots === 1) beatTicks = Math.round(beatTicks * 1.5);
+          if (trackData && trackData.staffs) {
+            trackData.staffs.forEach(staff => {
+              if (staff && staff.bars) {
+                staff.bars.forEach(bar => {
+                  if (bar && bar.voices) {
+                    bar.voices.forEach(voice => {
+                      let barTick = 0;
+                      if (voice && voice.beats) {
+                        voice.beats.forEach(beat => {
+                          let durationRatio = 1 / (beat.duration || 4);
+                          let beatTicks = Math.round(durationRatio * (ticksPerQuarter * 4));
+                          if (beat.dots === 1) beatTicks = Math.round(beatTicks * 1.5);
 
-                  if (beat.notes && beat.notes.length > 0) {
-                    beat.notes.forEach(n => {
-                      if (typeof n.realValue === 'number') {
-                        events.push({ tick: currentTick + barTick, type: 'on', note: n.realValue, vel: 90 });
-                        events.push({ tick: currentTick + barTick + beatTicks - 2, type: 'off', note: n.realValue });
+                          if (beat.notes && beat.notes.length > 0) {
+                            beat.notes.forEach(n => {
+                              if (n && typeof n.realValue === 'number') {
+                                events.push({ tick: currentTick + barTick, type: 'on', note: n.realValue, vel: 90 });
+                                events.push({ tick: currentTick + barTick + beatTicks - 2, type: 'off', note: n.realValue });
+                              }
+                            });
+                          }
+                          barTick += beatTicks;
+                        });
                       }
                     });
                   }
-                  barTick += beatTicks;
+                  let num = bar?.masterBar?.timeSignatureNumerator || 4;
+                  let den = bar?.masterBar?.timeSignatureDenominator || 4;
+                  currentTick += (num / den) * (ticksPerQuarter * 4);
                 });
-              });
-              currentTick += (bar.masterBar.timeSignatureNumerator / bar.masterBar.timeSignatureDenominator) * (ticksPerQuarter * 4);
+              }
             });
-          });
+          }
 
           tracksData.push(events);
         });
 
-        currentMidiUint8 = buildNativeMidi(tracksData, currentScore.tempo);
+        currentMidiUint8 = buildNativeMidi(tracksData, currentScore.tempo || 120);
 
         midiArea.style.display = 'block';
-        logStatus(`🎉 原生二進制 MIDI 提煉成功！大小: ${currentMidiUint8.byteLength} bytes`, 'success');
+        logStatus(`🎉 獨立安全引擎提煉成功！大小: ${currentMidiUint8.byteLength} bytes`, 'success');
       } catch (err) {
         console.error(err);
         logStatus(`❌ 生成失敗: ${err.message}`, 'error');
