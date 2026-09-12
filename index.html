@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arcatdia GP & MIDI 雙核心工作站</title>
-  <!-- 引入穩定版 AlphaTab -->
   <script src="https://cdn.jsdelivr.net/npm/@coderline/alphatab@1.3.0/dist/alphaTab.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/midi-player-js@2.0.16/browser/midiplayer.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
@@ -106,7 +105,6 @@
       cursor: pointer;
     }
 
-    /* 🎯 小節微調按鈕組排版 */
     .bar-btn-group {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -140,7 +138,7 @@
 <body>
 
   <h2>🎸 GP 拆軌 & MIDI 雙試聽工作站</h2>
-  <p class="desc">⚡ v3.5 自動扒 API & 小節步進版</p>
+  <p class="desc">⚡ v3.6 正宗二進制修復版</p>
 
   <div id="statusBox">
     <div id="statusText" class="log-info">⚙️ 系統就緒，等待樂譜...</div>
@@ -168,7 +166,6 @@
       </div>
       <input type="range" id="seekSlider" class="seek-slider" min="1" max="100" value="1">
       
-      <!-- 🎯 4 個精確微調掣：-4, -1, +1, +4 -->
       <div class="bar-btn-group">
         <button class="btn-step" onclick="stepBar(-4)">⏪ -4 Bar</button>
         <button class="btn-step" onclick="stepBar(-1)">◀ -1 Bar</button>
@@ -187,7 +184,7 @@
         <span style="font-size:13px; font-weight:bold; color:#4ade80;">🎹 生成的 MIDI 已就緒：</span>
         <button class="btn-action btn-midi-play" id="midiPlayBtn">▶ 試聽生成 MIDI</button>
       </div>
-      <button class="btn" id="downloadMidiBtn" style="background:#4ade80; color:#000;">📥 下載此 MIDI 檔案</button>
+      <button class="btn" id="downloadMidiBtn" style="background:#4ade80; color:#000;">📥 下載此 MIDI 檔案 (.mid)</button>
     </div>
   </div>
 
@@ -203,7 +200,7 @@
 
     let midiPlayer = null;
     let synth = null;
-    let currentMidiBytes = null;
+    let currentMidiUint8 = null;
     let isMidiPlaying = false;
 
     const statusText = document.getElementById('statusText');
@@ -254,11 +251,17 @@
         }
       });
 
-      synth = new Tone.PolySynth(Tone.Synth).toDestination();
+      // 初始化 Tone 合成器
+      synth = new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: "sawtooth" },
+        envelope: { attack: 0.01, decay: 0.2, sustain: 0.2, release: 0.8 }
+      }).toDestination();
+
       midiPlayer = new MidiPlayer.Player((event) => {
         if (event.name === 'Note on' && event.velocity > 0) {
           try {
-            synth.triggerAttackRelease(Tone.Frequency(event.noteNumber, "midi"), "8n", undefined, event.velocity / 127);
+            const freq = Tone.Frequency(event.noteNumber, "midi");
+            synth.triggerAttackRelease(freq, "8n", undefined, event.velocity / 127);
           } catch(e) {}
         }
       });
@@ -266,6 +269,7 @@
       midiPlayer.on('endOfFile', () => {
         isMidiPlaying = false;
         document.getElementById('midiPlayBtn').innerText = '▶ 試聽生成 MIDI';
+        logStatus('🏁 MIDI 試聽播放完畢', 'info');
       });
     });
 
@@ -322,11 +326,8 @@
       }
     });
 
-    // 🎯 核心小節精確跳轉邏輯（防過界防到零）
     function jumpToBar(target) {
       if (!api || !currentScore) return;
-      
-      // 鎖死在 [1, totalBars] 範圍內，絕不為 0 或超標
       currentBarIndex = Math.max(1, Math.min(totalBars, target));
       seekSlider.value = currentBarIndex;
       barDisplay.innerText = `小節: Bar ${currentBarIndex} / ${totalBars}`;
@@ -339,7 +340,6 @@
       }
     }
 
-    // 🎯 微調步進按鈕（-4, -1, +1, +4）
     window.stepBar = function(offset) {
       jumpToBar(currentBarIndex + offset);
     };
@@ -371,9 +371,9 @@
       logStatus(`🎵 正在獨奏: ${currentScore.tracks[index].name || (index + 1)}`, 'info');
     };
 
-    // 🎯 深度自動扒 API 導出核心
+    // 🎯 正宗 MIDI 導出二進制轉碼器
     document.getElementById('generateMidiBtn').addEventListener('click', () => {
-      logStatus('⚡ 正在扒取內部模組提煉 MIDI...', 'info');
+      logStatus('⚡ 正在轉換正宗 MIDI 二進制數據...', 'info');
       if (!currentScore) return;
 
       try {
@@ -385,70 +385,66 @@
           return;
         }
 
-        // 設定靜音遮罩
         currentScore.tracks.forEach((t, idx) => {
           t.playbackInfo.isMute = !selectedIndices.includes(idx);
         });
 
-        let binaryResult = null;
+        // 調用 AlphaTab 匯出實例
+        const midiExporter = new alphaTab.exporter.MidiExport();
+        const rawMidi = midiExporter.export(currentScore, api.settings);
 
-        // 扒法 1: alphaTab 頂層 MidiExport
-        if (alphaTab.MidiExport) {
-          binaryResult = new alphaTab.MidiExport().export(currentScore, api.settings);
-        }
-        // 扒法 2: alphaTab.exporter.MidiExport
-        else if (alphaTab.exporter && alphaTab.exporter.MidiExport) {
-          binaryResult = new alphaTab.exporter.MidiExport().export(currentScore, api.settings);
-        }
-        // 扒法 3: alphaTab.midi.MidiFile
-        else if (alphaTab.midi && alphaTab.midi.MidiFile) {
-          const mf = new alphaTab.midi.MidiFile();
-          binaryResult = mf.write ? mf.write(currentScore) : mf.toBinary(currentScore);
-        }
-        // 扒法 4: 透過 API 實例自帶方法
-        else if (typeof api.exportMidi === 'function') {
-          binaryResult = api.exportMidi();
-        }
-
-        if (!binaryResult) {
-          throw new Error('自動探測失敗：未能鎖定 MIDI 導出器');
-        }
-
-        // 格式統一轉成 Uint8Array
-        if (typeof binaryResult.toBinary === 'function') {
-          currentMidiBytes = binaryResult.toBinary();
-        } else if (binaryResult instanceof Uint8Array) {
-          currentMidiBytes = binaryResult;
-        } else if (binaryResult.buffer) {
-          currentMidiBytes = new Uint8Array(binaryResult.buffer);
+        // 確保將 AlphaTab 內部的二進制數據流轉化為標準 Uint8Array
+        if (rawMidi instanceof Uint8Array) {
+          currentMidiUint8 = rawMidi;
+        } else if (rawMidi.toBinary) {
+          currentMidiUint8 = rawMidi.toBinary();
+        } else if (rawMidi.buffer) {
+          currentMidiUint8 = new Uint8Array(rawMidi.buffer);
+        } else if (Array.isArray(rawMidi)) {
+          currentMidiUint8 = new Uint8Array(rawMidi);
         } else {
-          currentMidiBytes = new Uint8Array(binaryResult);
+          // 透過底層 ByteArray 讀取
+          const bytes = [];
+          for (let i = 0; i < (rawMidi.length || rawMidi.capacity || 0); i++) {
+            bytes.push(rawMidi.get ? rawMidi.get(i) : rawMidi[i]);
+          }
+          currentMidiUint8 = new Uint8Array(bytes);
+        }
+
+        if (!currentMidiUint8 || currentMidiUint8.byteLength < 50) {
+          throw new Error(`MIDI 轉換異常，數據長度不足 (${currentMidiUint8 ? currentMidiUint8.byteLength : 0} bytes)`);
         }
 
         midiArea.style.display = 'block';
-        logStatus(`🎉 成功提煉 ${selectedIndices.length} 條音軌！大小: ${currentMidiBytes.byteLength} bytes`, 'success');
+        logStatus(`🎉 提煉成功！正宗 MIDI 大小: ${Math.round(currentMidiUint8.byteLength / 1024)} KB，已解鎖試聽！`, 'success');
       } catch (err) {
         console.error(err);
-        logStatus(`❌ 生成 MIDI 發生錯誤: ${err.message}`, 'error');
+        logStatus(`❌ 生成失敗: ${err.message}`, 'error');
       }
     });
 
+    // 🎯 點擊啟動 Tone.js 實時試聽（徹底突破手機靜音限制）
     midiPlayBtn.addEventListener('click', async () => {
-      if (!currentMidiBytes) return;
+      if (!currentMidiUint8) return;
+
       if (isGpPlaying) api.pause();
 
+      // 強制喚醒手機瀏覽器 AudioContext
       await Tone.start();
+
       if (isMidiPlaying) {
         stopMidi();
       } else {
         try {
-          midiPlayer.loadArrayBuffer(currentMidiBytes.buffer.slice(currentMidiBytes.byteOffset, currentMidiBytes.byteOffset + currentMidiBytes.byteLength));
+          // 複製獨立 ArrayBuffer 供播放器讀取
+          const playBuffer = currentMidiUint8.slice().buffer;
+          midiPlayer.loadArrayBuffer(playBuffer);
           midiPlayer.play();
           isMidiPlaying = true;
           midiPlayBtn.innerText = '⏹ 停止 MIDI';
-          logStatus('▶ 正在試聽生成 MIDI...', 'success');
+          logStatus('▶ 正在試聽生成的 MIDI 音色...', 'success');
         } catch(err) {
-          logStatus(`❌ 試聽失敗: ${err.message}`, 'error');
+          logStatus(`❌ MIDI 試聽失敗: ${err.message}`, 'error');
         }
       }
     });
@@ -457,20 +453,23 @@
       if (midiPlayer) midiPlayer.stop();
       isMidiPlaying = false;
       midiPlayBtn.innerText = '▶ 試聽生成 MIDI';
+      logStatus('⏹ 已停止試聽', 'info');
     }
 
+    // 🎯 鎖死二進制 Octet-stream，拒絕 .rtx
     document.getElementById('downloadMidiBtn').addEventListener('click', () => {
-      if (!currentMidiBytes) return;
-      const blob = new Blob([currentMidiBytes], { type: 'audio/midi' });
+      if (!currentMidiUint8) return;
+
+      const blob = new Blob([currentMidiUint8], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${currentScore.title || 'extracted'}_custom.mid`;
+      a.download = `${(currentScore.title || 'extracted').replace(/\s+/g, '_')}_custom.mid`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      logStatus('📥 MIDI 下載已觸發！', 'success');
+      logStatus('📥 正宗 .mid 檔案已下載，可直接拖入 Logic Pro！', 'success');
     });
   </script>
 </body>
